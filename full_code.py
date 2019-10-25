@@ -15,32 +15,32 @@ from pyspark.ml.regression import *
 from features_utils import * 
 
 schema = StructType([
-StructField("ID_DAY", DateType()),
-StructField("SID_STORE", IntegerType()),
-StructField("NB_TICKET", IntegerType()),
-StructField("F_TOTAL_QTY", IntegerType()),
-StructField("F_VAL_SALES_AMT_TCK", DoubleType()),
-StructField("SITE_FORMAT", StringType())])
+StructField("DATE", DateType()),
+StructField("STORE", IntegerType()),
+StructField("NUMBERS_OF_TICKETS", IntegerType()),
+StructField("QTY", IntegerType()),
+StructField("CA", DoubleType()),
+StructField("FORMAT", StringType())])
 
-df = spark.read.csv("gs://my_bucket/poland_ks", header = 'true', schema=schema)
+df = spark.read.csv("gs://my_bucket/KS", header = 'true', schema=schema)
 
 #================== step before ==================
 
 df = (df
-    .withColumn('yearday', F.dayofyear(F.col("ID_DAY")))
-    .withColumn('year', F.year(F.col('ID_DAY')))
+    .withColumn('yearday', F.dayofyear(F.col("DATE")))
+    .withColumn('year', F.year(F.col('DATE')))
     )
 
 self_join = (df
-    .groupby("SID_STORE", "year")
+    .groupby("STORE", "year")
     .agg(
-        F.collect_list("F_TOTAL_QTY").alias("qties"),
+        F.collect_list("QTY").alias("qties"),
          F.collect_list("yearday").alias("days")
          )
     .withColumn("qties_vectorized", toSparseVector(F.col("days"), F.col("qties")))
     .withColumn("year_join", F.col("year") + 1)
      .select(
-      F.col("SID_STORE").alias("p_id_store"), F.col("year").alias("year2"), F.col("qties_vectorized").alias("qties_vectorized"),
+      F.col("STORE").alias("p_id_store"), F.col("year").alias("year2"), F.col("qties_vectorized").alias("qties_vectorized"),
        F.col("days").alias("dayss"),  F.col("qties").alias("qties"),  F.col("year_join").alias("year_join")
         )
      )
@@ -48,7 +48,7 @@ self_join = (df
 
 df= (df
     .join(self_join
-        , ([self_join.p_id_store == df.SID_STORE, self_join.year_join ==  df.year]),
+        , ([self_join.p_id_store == df.STORE, self_join.year_join ==  df.year]),
         how = "left"
         )
         .withColumn("qty_reference", getReference(F.col("yearday"), F.col("qties_vectorized")))
@@ -61,17 +61,17 @@ df= (df
 
 
 
-dex = DayExtractor(inputCol='ID_DAY')
-mex = MonthExtractor(inputCol='ID_DAY')
-yex = YearExtractor(inputCol='ID_DAY')
-wdex = WeekDayExtractor(inputCol='ID_DAY')
+dex = DayExtractor(inputCol='DATE')
+mex = MonthExtractor(inputCol='DATE')
+yex = YearExtractor(inputCol='DATE')
+wdex = WeekDayExtractor(inputCol='DATE')
 wex = WeekendExtractor()
 vex = VivaldiExtractor(inputCol = "month")
 mqex = MonthQuarterExtractor(inputCol = "day")
 mbex = MonthBeginExtractor()
 meex = MonthEndExtractor()
 yqex = YearQuarterExtractor()
-ydex = YearDayExtractor(inputCol='ID_DAY')
+ydex = YearDayExtractor(inputCol='DATE')
 
 numeric_col= ["qty_reference"]
 
@@ -109,19 +109,18 @@ pipeline = Pipeline(stages = [dex, mex, yex, wdex, wex, meex, vex, mbex, mqex, y
 model= pipeline.fit(df)
 final_dataset = model.transform(df)
 
-
-target = 'F_TOTAL_QTY'
+target = 'QTY'
 
 gbt = GBTRegressor(featuresCol = 'Features', labelCol=target)
 dt = DecisionTreeRegressor(featuresCol = 'Features', labelCol=target)
 lr = LinearRegression(featuresCol = 'Features', labelCol=target)
 
 
-X_train = (final_dataset.filter(F.col('ID_DAY').between("2017-01-02", "2018-06-01"))
+X_train = (final_dataset.filter(F.col('DATE').between("2017-01-02", "2018-06-01"))
     .withColumn(target, F.log1p(F.col(target)))
     )
 
-X_test = (final_dataset.filter(F.col('ID_DAY') > "2018-06-01")
+X_test = (final_dataset.filter(F.col('DATE') > "2018-06-01")
     .withColumn(target, F.log1p(F.col(target))))
 
 
@@ -130,11 +129,7 @@ fitted = gbt.fit(X_train)
 yhat = (fitted.transform(X_test)
     .withColumn("prediction", F.expm1(F.col("prediction")))
     .withColumn(target, F.expm1(F.col(target)))
-    .withColumn('fiability', 1 - F.abs(F.col(target) - F.col("prediction"))/F.col(target))
-    .withColumn('fiability', F.when(F.col("fiability") <0, 0).otherwise(F.col("fiability")))
     )
-
-print(yhat.select(F.sum(F.col(target)*F.col("fiability"))/F.sum(F.col(target))).show())
 
 eval_ = RegressionEvaluator(labelCol= target, predictionCol= "prediction", metricName="rmse")
 
@@ -167,11 +162,7 @@ cvModel = cv.fit(X_train)
 yhat = (cvModel.transform(X_test)
     .withColumn("prediction", F.expm1(F.col("prediction")))
     .withColumn(target, F.expm1(F.col(target)))
-    .withColumn('fiability', 1 - F.abs(F.col(target) - F.col("prediction"))/F.col(target))
-    .withColumn('fiability', F.when(F.col("fiability") <0, 0).otherwise(F.col("fiability")))
     )
-
-print(yhat.select(F.sum(F.col(target)*F.col("fiability"))/F.sum(F.col(target))).show())
 
 eval_ = RegressionEvaluator(labelCol= target, predictionCol= "prediction", metricName="rmse")
 
